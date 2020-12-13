@@ -1,7 +1,8 @@
-import os, shutil
+import os, shutil, stat
 from pathlib import Path
 
-from config import setInterval, sync_frequency, to_reverse, to_sync_files_list
+from config import sync_frequency, to_reverse, to_sync_files_list, to_sync_again, to_thorough_copy
+from decorator import setInterval
 
 # files and dirs to sync
 from config import to_sync_dirs_list, FROM_WORKSPACE_ROOT, TO_WORKSPACE_ROOT
@@ -14,12 +15,44 @@ def judge_to_swap(left, right):
         return right, left
 
 
+def remove_readonly(func, path, _):
+    """Clear the readonly bit and reattempt the removal"""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def onerror(func, path, exc_info):
+    """
+    Error handler for ``shutil.rmtree``.
+
+    If the error is due to an access error (read only file)
+    it attempts to add write permission and then retries.
+
+    If the error is for another reason it re-raises the error.
+
+    Usage : ``shutil.rmtree(path, onerror=onerror)``
+    """
+    import stat
+    if not os.access(path, os.W_OK):
+        # Is the error an access error ?
+        os.chmod(path, stat.S_IWUSR)
+        func(path)
+    else:
+        raise
+
+
 def sync_dirs():
     for directory in to_sync_dirs_list:
-        t_from = Path(FROM_WORKSPACE_ROOT + '\\' + directory)
-        t_to = Path(TO_WORKSPACE_ROOT + '\\' + directory)
-        t_from, t_to = judge_to_swap(t_from, t_to)
-        shutil.copytree(t_from, t_to)
+        from_path = Path(FROM_WORKSPACE_ROOT + '\\' + directory)
+        to_path = Path(TO_WORKSPACE_ROOT + '\\' + directory)
+        from_path, to_path = judge_to_swap(from_path, to_path)
+
+        if to_thorough_copy and to_path.exists():
+            # shutil.rmtree(to_path, onerror=onerror) # would raise Permission Error
+            # os.system('rmdir /S /Q "{}"'.format(to_path))
+            os.system('rimraf "{}"'.format(to_path))
+
+        shutil.copytree(from_path, to_path, dirs_exist_ok=True)
 
 
 def sync_files():
@@ -33,17 +66,28 @@ def sync_files():
         shutil.copy(file_from, file_to)
 
 
-@setInterval(sec=sync_frequency)
-def go_sync(times):
-    print('complete ' + times.__str__() + ' times')
+times = 0
+
+
+def show_times():
+    global times
     times += 1
+    print('synced ' + times.__str__() + ' times')
+
+
+@setInterval(sec=sync_frequency)
+def sync_again():
+    sync_files()
+    sync_dirs()
+    show_times()
 
 
 def entry():
-    times = 1
-    go_sync(times)
-    # sync_dirs()
-    # sync_files()
+    sync_files()
+    sync_dirs()
+    show_times()
+    if to_sync_again:
+        sync_again()
 
 
 # read input from terminal: https://blog.csdn.net/PPLLO_o/article/details/99057765
